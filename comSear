@@ -1,0 +1,147 @@
+import fastapi
+from pydantic import BaseModel
+from typing import Optional, Any
+from google.genai import types
+from utilities.custom_logging import log as logger
+
+
+class HybridSearchQuery(BaseModel):
+    """Model for hybrid search query input."""
+    query: str
+    domain: Optional[str] = None
+
+
+class HybridSearchResponse(BaseModel):
+    """Model for hybrid search response."""
+    combined_result: str
+
+
+def get_router() -> fastapi.APIRouter:
+    """
+    Create a router for hybrid search combining QA chain and document search.
+
+    Returns:
+        fastapi.APIRouter : Router for /hybrid_search
+    """
+    router = fastapi.APIRouter()
+
+    @router.post("/hybrid_search", response_model=HybridSearchResponse)
+    async def hybrid_search(
+        request_body: HybridSearchQuery, 
+        request: fastapi.Request,
+        userID: str = fastapi.Header(...)  # Required header
+    ):
+        """
+        Combine responses from qachain and document_search using LLM.
+        
+        Args:
+            request_body: Query with optional domain
+            request: FastAPI request object
+            userID: User ID from request header
+            
+        Returns:
+            Combined response from both sources with individual results for comparison
+        """
+        logger.info(f"Hybrid search query: {request_body.query} for user: {userID}")
+        
+        try:
+            # Get response from qachain
+            # qachain_result = await qachain(request_body.query, userID, request_body.domain)
+            qachain_result = "QA Chain response: This is the conversational AI response to your query about login issues in Check In."
+            
+            # Get response from document_search
+            #  doc_search_result = await document_search(request_body.query, request_body.domain)
+            doc_search_result = "Document search response: These are the relevant documents from the knowledge base about Check In login procedures."
+            
+            logger.info(f"QA Chain Response: {qachain_result}")
+            logger.info(f"Document Search Response: {doc_search_result}")
+            
+            # Combine responses using LLM
+            combined_result = await combine_responses_with_llm(
+                request_body.query,
+                str(qachain_result),
+                str(doc_search_result)
+            )
+            
+            return HybridSearchResponse(
+                combined_result=combined_result,
+                qachain_response=qachain_result,
+                document_search_response=doc_search_result
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in hybrid search: {str(e)}")
+            raise fastapi.HTTPException(status_code=500, detail=str(e))
+
+
+    async def combine_responses_with_llm(query: str, qachain_response: str, doc_search_response: str) -> str:
+        """
+        Use LLM to combine and synthesize responses from both sources.
+        
+        Args:
+            query: Original user query
+            qachain_response: Response from QA chain
+            doc_search_response: Response from document search
+            
+        Returns:
+            Combined and refined response
+        """
+        prompt = f"""
+You are a technical support AI assistant specialized in synthesizing information from multiple sources.
+
+User Query: {query}
+
+Source 1 - Conversational AI Agent:
+{qachain_response}
+
+Source 2 - Knowledge Base Documents:
+{doc_search_response}
+
+Instructions:
+1. Provide a concise, actionable answer (3-5 sentences maximum)
+2. Merge complementary information from both sources
+3. If sources conflict, prefer the most recent or authoritative information
+4. Use bullet points only for step-by-step procedures
+5. Avoid redundant explanations
+6. Focus on practical solutions
+7. If one source is significantly better, use that as primary and supplement with the other
+
+Format your response as:
+- Direct answer to the query
+- Key action items (if applicable)
+- Brief explanation (if needed)
+
+Provide ONLY the synthesized response without meta-commentary:
+"""
+        
+        try:
+            from google.genai import Client
+            from google.cloud import aiplatform
+            import os
+            
+            project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "sab-dev-gen-ai-tech-6095")
+            location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+            model_name = os.getenv("GOOGLE_GEMINI_MODEL", "gemini-2.0-flash-exp")
+            
+            aiplatform.init(project=project_id, location=location)
+            client = Client(vertexai=True, project=project_id, location=location)
+            
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    top_p=0.9,
+                    max_output_tokens=1024,
+                )
+            )
+            
+            combined_response = response.text.strip()
+            logger.info(f"Combined LLM Response: {combined_response}")
+            return combined_response
+            
+        except Exception as e:
+            logger.error(f"Error combining responses with LLM: {str(e)}")
+            return f"**Quick Answer:** {qachain_response[:200]}...\n\n**Additional Context:** {doc_search_response[:200]}..."
+
+    return router
