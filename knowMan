@@ -1,0 +1,295 @@
+import json
+import logging
+import re
+import textwrap
+from typing import Any, Dict, Union
+
+import fastapi
+import vertexai
+from config import Config
+from embeddings.embeddings_knowledge_manager import EmbeddingKnowledgeManager
+from fastapi import Header
+from google.cloud import bigquery
+from pydantic import BaseModel
+from vertexai.generative_models import GenerativeModel
+
+logger = logging.getLogger(__name__)
+
+global project_id, websocket_url
+project_id = ""
+websocket_url = ""
+
+
+class Item(BaseModel):
+    query: str
+
+
+class BigQueryClient:
+    def __init__(self, project_id: str):
+        self.client = bigquery.Client(project=project_id)
+        self.project_id = project_id
+
+    async def load_similar_jira_from_bq(
+        self, user_query: str, domain: str
+    ) -> Union[Dict[str, Dict[str, str]], str]:
+
+        logger.info("User query: %s", user_query)
+        logger.info("Domain is: %s", domain)
+        if domain == "Check In":
+            pattern = re.compile(r"SSDSSCI(?:OS)?-\d+")
+            # Perform query for Check In domain
+            if pattern.fullmatch(user_query):
+                query = f"""
+                SELECT `Issue Key` as jira_id, content as jira_content, `Resolution Notes` as jira_resolution
+                FROM `{self.project_id}.dcsiq.merged_jira_data`
+                WHERE `Issue Key` = '{user_query}'
+                """
+            else:
+                query = f"""
+                SELECT base.`Issue type` as jira_id, base.content as jira_content, base.`Resolution Notes` as jira_resolution
+                FROM VECTOR_SEARCH(
+                TABLE `{self.project_id}.dcsiq.jira_embeddings_idx`, 'ml_generate_embedding_result',
+                (
+                SELECT ml_generate_embedding_result, content AS query
+                FROM ML.GENERATE_EMBEDDING(
+                MODEL `{self.project_id}.dcsiq.embedding_model1`,
+                (SELECT '{user_query}' AS content))
+                ),
+                top_k => 10, options => '{{"fraction_lists_to_search": 0.01}}')
+                """
+        elif domain == "Schedule Change":
+            pattern = re.compile(r"/JIRA:SSDHSC-\d+")
+            # Perform query for Schedule Change domain
+            logger.info("User query to look in to the schedule JIRA: %s", user_query)
+            if pattern.fullmatch(user_query):
+                logger.info("fetches the details using JIRA ID")
+                user_query = user_query.replace("/JIRA:", "")
+                query = f"""
+                SELECT `Issue Key` as jira_id, content as jira_content, `Resolution Notes` as jira_resolution
+                FROM `{self.project_id}.dcsiq.sch_jira_table`
+                WHERE `Issue Key` = '{user_query}'
+                """
+            else:
+                query = f"""
+                SELECT base.`Issue Key` as jira_id, base.content as jira_content, base.`Resolution Notes` as jira_resolution
+                FROM VECTOR_SEARCH(
+                TABLE `{self.project_id}.dcsiq.sch_jira_embeddings`, 'ml_generate_embedding_result',
+                (
+                SELECT ml_generate_embedding_result, content AS query
+                FROM ML.GENERATE_EMBEDDING(
+                MODEL `{self.project_id}.dcsiq.embedding_model`,
+                (SELECT '{user_query}' AS content))
+                ),
+                top_k => 10, options => '{{"fraction_lists_to_search": 0.01}}')
+                """
+        elif domain == "JIRA AGENT":
+            query = f"""
+            SELECT base.`Issue type` as jira_id, base.content as jira_content, base.`Resolution Notes` as jira_resolution
+            FROM VECTOR_SEARCH(
+            TABLE `{self.project_id}.dcsiq.jira_embeddings_idx`, 'ml_generate_embedding_result',
+            (
+            SELECT ml_generate_embedding_result, content AS query
+            FROM ML.GENERATE_EMBEDDING(
+            MODEL `{self.project_id}.dcsiq.embedding_model1`,
+            (SELECT '{user_query}' AS content))
+            ),
+            top_k => 5, options => '{{"fraction_lists_to_search": 0.01}}')
+            """
+        else:
+            logger.warning(f"Unsupported domain: {domain}")
+            return "Unsupported domain"
+        query_job = self.client.query(query)
+        if not list(query_job):
+            logger.info("No matching JIRA found")
+            return "Reach out to us to add details about this " + user_query
+        logger.info("Matching JIRA found")
+        data = {
+            row.jira_id: {"content": row.jira_content, "resolution": row.jira_resolution}
+            for row in query_job
+        }
+        logger.info("Data found is : %s", data)
+        return data
+
+    async def load_matching_kms_article(self, user_query: str) -> Union[str, list[dict[Any, Any]]]:
+        find_query = f"""
+        SELECT query.query, base.content, distance
+        FROM VECTOR_SEARCH(
+            TABLE `{self.project_id}.dcsiq.knowledge_embedding`, 'ml_generate_embedding_result',
+            (
+                SELECT ml_generate_embedding_result, content AS query
+                FROM ML.GENERATE_EMBEDDING(
+                    MODEL `{self.project_id}.dcsiq.embedding_model1`,
+                    (SELECT '{user_query}' AS content)
+                )
+            ),
+            top_k => 5, options => '{{"fraction_lists_to_search": 0.01}}'
+        ) order by distance desc;
+        """
+        result = self.client.query(find_query)
+        if not list(result):
+            return "No matching knowledge article found"
+        logger.info("Matching KMS article Found")
+        data = []
+        for row in result:
+            row_data = {field: row[field] for field in row.keys()}
+            data.append(row_data)
+        return data
+
+    async def beautify_llm_response(self, query: str, response: str) -> str:
+        logger.info(f"Actual Response is : {response.strip()}")
+        try:
+            data = json.loads(response)
+            transformed_response = f"{query} :\n\n"
+
+            for i, entry in enumerate(data, 1):
+                action = entry.get("Action", "")
+                transformed_response += f"{i}. {action}\n\n"
+            logger.info(f"Transformed Response: {transformed_response.strip()}")
+            return transformed_response.strip()
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding JSON: {e}")
+            return response
+
+
+class KnowledgeSearchService:
+    def __init__(self, project_id: str):
+        self.project_id = project_id
+        self.embeddings_manager = EmbeddingKnowledgeManager()
+        self.bq_client = BigQueryClient(project_id)
+
+    async def get_relevant_prompts(self) -> Dict[str, str]:
+        raise NotImplementedError
+
+    async def qa_chain_response(self, query: str) -> str:
+        matching_kms = await self.bq_client.load_matching_kms_article(query)
+        if isinstance(matching_kms, str):
+            # print("Matching KMS as str", matching_kms)
+            return matching_kms
+        # print("Matching KMS Not as str", matching_kms)
+        context_string = "\n".join(
+            [f"Context {i + 1}: {content}" for i, content in enumerate(matching_kms)]
+        )
+        vertexai.init(project=self.project_id, location="us-central1")
+        model = GenerativeModel("gemini-2.5-pro")
+        prompt = (
+            textwrap.dedent(
+                """\
+                  Answer the query using ONLY the information provided in the context articles below. If the provided context is not sufficient to answer the query, respond with: `{"response": "Information available in knowledge articles was not sufficient to answer the question. Try document search or script based workflow."}`.
+
+Respond in JSON format using the following schema and try to include all the relevant information in the response:
+
+```json
+{"response": "your answer"}
+```
+
+Query: {query}
+
+Context 1: {context_1}
+
+Context 2: {context_2}
+
+Context 3: {context_3}
+
+Context 4: {context_4}
+
+Context 5: {context_5}"""
+            )
+            + context_string
+            + "\n\nQuery: "
+            + query
+        )
+        logger.info("Prompt for QA chain response:: %s", prompt)
+        response = model.generate_content(
+            prompt, generation_config={"response_mime_type": "application/json"}
+        )
+        res = json.loads(response.text)
+        logger.info(f"KMS Search response: {res['response']}")
+        # print(f"KMS Search response: {res['response']}")
+        return await self.bq_client.beautify_llm_response(query, res["response"])
+
+    def json_to_markdown(self, json_response: str) -> str:
+        try:
+            data = json.loads(json_response)
+        except json.JSONDecodeError as e:
+            return f"Error decoding JSON: {e}"
+
+        markdown_lines = []
+        for key, value in data.items():
+            markdown_lines.append(f"**{key}**: {value}")
+        return "\n".join(markdown_lines)
+
+    async def get_similar_jira_for_agent(self, query: str, domain: str) -> str:
+        try:
+            matching_jiras = await self.bq_client.load_similar_jira_from_bq(query, domain)
+
+            if isinstance(matching_jiras, str):
+                return matching_jiras
+
+            context_string = "\n".join(
+                [
+                    f"Context {i + 1}: Jira ID: {issue_id}, Content: {details['content']}, Resolution: {details['resolution']}"
+                    for i, (issue_id, details) in enumerate(matching_jiras.items())
+                ]
+            )
+            return context_string
+        except Exception as e:
+            logger.error(f"Error in get_similar_jira_for_agent: {e}")
+            return "Error fetching similar JIRA issues, No Matching JIRA found at this time."
+
+    async def jira_search_response(self, query: str, domain: str) -> str:
+        matching_jiras = await self.bq_client.load_similar_jira_from_bq(query, domain)
+
+        if isinstance(matching_jiras, str):
+            return matching_jiras
+
+        context_string = "\n".join(
+            [
+                f"Context {i + 1}: Jira ID: {issue_id}, Content: {details['content']}, Resolution: {details['resolution']}"
+                for i, (issue_id, details) in enumerate(matching_jiras.items())
+            ]
+        )
+        logger.info("Gathered context for jira search")
+        vertexai.init(project=self.project_id, location="us-central1")
+        model = GenerativeModel("gemini-2.5-pro")
+        prompt = (
+            textwrap.dedent(
+                """\
+                {
+  "response": "Please answer the query below based on the provided context. We have a table with JIRA data and have used vector search to find the most similar JIRA matches. The descriptions, IDs, content, and resolution notes of the top 10 matching JIRAs are appended to the context. If the user has provided a JIRA ID in the query, summarize the JIRA and provide resolution notes if available. Use the context to find the most similar JIRA to the query, summarize it, and provide its resolution. If the user asks for details about the JIRA, how to recreate it, or how it can be fixed, provide the relevant information. If the context is insufficient to answer the query, state that the provided context is not sufficient to answer the question. Return the response as a JSON object with the following schema: {\"response\": str}. Replace 'str' with the generated answer. The response field is required. Important: Only return a single piece of valid JSON text. Query and Context are as follows:"
+                """
+            )
+            + context_string
+            + "\n\nQuery: "
+            + query
+        )
+        response = model.generate_content(
+            prompt, generation_config={"response_mime_type": "application/json"}
+        )
+        res = json.loads(response.text)
+        logger.info(f"Jira Search response: {res['response']}")
+
+        return res["response"]
+
+
+def init_project(cnf: Config):
+    global project_id, websocket_url
+    project_id = cnf.agent.project
+    websocket_url = cnf.url.ws_url
+
+
+def get_router() -> fastapi.APIRouter:
+    router = fastapi.APIRouter()
+    logger.info(f"Project ID: {project_id}")
+    knowledge_search_service = KnowledgeSearchService(project_id)
+
+    @router.post("/qachain")
+    async def qa_chain_response(item: Item):
+        # print("Item query", item.query)
+        logger.debug(f"qa_chain_response: {item}")
+        return await knowledge_search_service.qa_chain_response(item.query)
+
+    @router.post("/getSimilarJira")
+    async def get_similar_jira(item: Item, domain: str = Header(None, alias="domain")):
+        return await knowledge_search_service.jira_search_response(item.query, domain=domain)
+
+    return router
