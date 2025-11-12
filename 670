@@ -1,0 +1,188 @@
+import fastapi
+import os
+import asyncio
+import re
+import textwrap  # <-- Added for a cleaner prompt
+from pydantic import BaseModel
+from typing import Optional, Any
+from google.genai import types
+from utilities.custom_logging import log as logger
+from fastapi.responses import HTMLResponse
+
+# --- Imports from your previous files ---
+try:
+    from config import Config
+    from subsystem.Document_Enhancement import DocumentEnhancement
+    from knowledge_search_service import KnowledgeSearchService
+except ImportError as e:
+    logger.critical(f"Failed to import services: {e}. Ensure service files are accessible.")
+    raise
+
+
+class HybridSearchQuery(BaseModel):
+    """Model for hybrid search query input."""
+    query: str
+    domain: Optional[str] = None
+
+
+class HybridSearchResponse(BaseModel):
+    """Model for hybrid search response."""
+    combined_result: str
+    qachain_response: str
+    document_search_response: str
+
+
+def get_router() -> fastapi.APIRouter:
+    """
+    Create a router for hybrid search combining QA chain and document search.
+
+    Returns:
+        fastapi.APIRouter : Router for /hybrid_search
+    """
+    router = fastapi.APIRouter()
+
+    # --- Initialize the services ---
+    try:
+        cnf = Config()
+        project_id = cnf.agent.project
+        
+        knowledge_search_service = KnowledgeSearchService(project_id)
+        doc_search_service = DocumentEnhancement(project_id, config=cnf)
+        
+        logger.info("Initialized KnowledgeSearchService and DocumentEnhancement.")
+    except Exception as e:
+        logger.critical(f"Failed to initialize services at startup: {e}")
+        knowledge_search_service = None
+        doc_search_service = None
+
+
+    @router.post("/hybrid_search", response_model=HybridSearchResponse)
+    async def hybrid_search(
+        request_body: HybridSearchQuery, 
+        request: fastapi.Request,
+        userID: str = fastapi.Header(...)  # Required header
+    ):
+        """
+        Combine responses from qachain and document_search using LLM.
+        """
+        logger.info(f"Hybrid search query: {request_body.query} for user: {userID}")
+
+        if not knowledge_search_service or not doc_search_service:
+            logger.error("Search services are not initialized.")
+            raise fastapi.HTTPException(status_code=503, detail="Search services are unavailable.")
+            
+        try:
+            logger.info("Running QA chain and Document Search in parallel...")
+            qa_task = knowledge_search_service.qa_chain_response(request_body.query)
+            doc_task = doc_search_service.invoke_chain(request_body.query, userID=userID) 
+            
+            results = await asyncio.gather(
+                qa_task,
+                doc_task,
+                return_exceptions=True
+            )
+
+            # --- Process QA Chain Result ---
+            if isinstance(results[0], Exception):
+                logger.error(f"QA chain task failed: {results[0]}")
+                qachain_result = "Error: QA chain failed to produce a result."
+            else:
+                qachain_result = str(results[0])
+
+            # --- Process Document Search Result (Preserving HTML) ---
+            if isinstance(results[1], Exception):
+                logger.error(f"Document search task failed: {results[1]}")
+                doc_search_result = "Error: Document search failed to produce a result."
+            elif isinstance(results[1], HTMLResponse):
+                logger.info("Document search returned HTML. Preserving formatted content.")
+                try:
+                    html_body = results[1].body.decode("utf-8")
+                    doc_search_result = html_body
+                except Exception as e:
+                    logger.error(f"Failed to decode HTMLResponse body: {e}")
+                    doc_search_result = "Document search returned unparseable HTML."
+            else:
+                doc_search_result = str(getattr(results[1], 'answer', results[1]))
+            
+            logger.info(f"QA Chain Response: {qachain_result}")
+            logger.info(f"Document Search Response (Raw HTML): {doc_search_result[:150]}...")
+            
+            combined_result = await combine_responses_with_llm(
+                request_body.query,
+                qachain_result, 
+                doc_search_result
+            )
+            
+            return HybridSearchResponse(
+                combined_result=combined_result,
+                qachain_response=qachain_result,
+                document_search_response=doc_search_result
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in hybrid search: {str(e)}")
+            raise fastapi.HTTPException(status_code=500, detail=str(e))
+
+    # --- MODIFICATION: Updated prompt in this function ---
+    async def combine_responses_with_llm(query: str, qachain_response: str, doc_search_response: str) -> str:
+        """
+        Use LLM to combine and synthesize responses from both sources.
+        """
+        
+        # This new prompt is much more explicit about the grounding support.
+        prompt = textwrap.dedent(f"""
+You are a technical support AI assistant. Your task is to synthesize a single, high-quality answer from two sources in response to a user query.
+
+User Query:
+{query}
+
+---
+Source 1 (Conversational AI Agent):
+{qachain_response}
+---
+Source 2 (Knowledge Base Document Search):
+{doc_search_response}
+---
+
+INSTRUCTIONS:
+1.  Analyze both sources. Source 2 is a direct document lookup and often contains detailed steps and formatted HTML. Source 1 is a conversational summary.
+2.  Synthesize a single, comprehensive answer. Use the detailed steps from Source 2 if available. Use Source 1 for conversational context or if Source 2 is empty/irrelevant.
+3.  **CRITICAL:** Source 2 may contain an HTML block for "Grounding support" (e.g., `<br><br><span style='color:blue;'><b>Grounding support:</b>...</span>`).
+4.  You **MUST** find this "Grounding support" block in Source 2 and append it, exactly as-is, to the very end of your final synthesized answer.
+5.  Do not add any text *after* the "Grounding support" block.
+
+Final Synthesized Answer (including grounding):
+""")
+        
+        try:
+            from google.genai import Client
+            from google.cloud import aiplatform
+            import os
+            
+            project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "sab-dev-gen-ai-tech-6095")
+            location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+            model_name = os.getenv("GOOGLE_GEMINI_MODEL", "gemini-2.0-flash-exp")
+            
+            aiplatform.init(project=project_id, location=location)
+            client = Client(vertexai=True, project=project_id, location=location)
+            
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    top_p=0.9,
+                    max_output_tokens=2048, # Increased max tokens to handle HTML
+                )
+            )
+            
+            combined_response = response.text.strip()
+            logger.info(f"Combined LLM Response: {combined_response}")
+            return combined_response
+            
+        except Exception as e:
+            logger.error(f"Error combining responses with LLM: {str(e)}")
+            # Fallback now includes the full doc_search_response to preserve links
+            return f"**Quick Answer:** {qachain_response}\n\n**Full Document:** {doc_search_response}"
+
+    return router
