@@ -1,0 +1,93 @@
+import json
+
+from agents.callback_logging import send_action_in_progress_to_caller
+from config import Config
+from fastapi.responses import HTMLResponse  # This is no longer used by invoke_chain
+from google.cloud import bigquery
+from utilities.custom_logging import log
+
+global project_id, textModelPath, embeddingsPath, embeddingsModelPath
+textModelPath = ""
+embeddingsPath = ""
+embeddingsModelPath = ""
+project_id = ""
+ws_url = ""
+
+
+class BigQueryClient:
+    def __init__(self, project_id: str):
+        self.client = bigquery.Client(project=project_id)
+        self.project_id = project_id
+
+    async def call_rag_model(self, query: str, userID: str):
+        formatted_query = f"""
+        SELECT
+            base.content,
+            base.uri,
+            base.page_span_start,
+            base.page_span_end
+        FROM
+        VECTOR_SEARCH(
+        TABLE `{self.project_id}.{embeddingsPath}`,
+        'ml_generate_embedding_result',
+        (
+            SELECT
+            ml_generate_embedding_result,
+            content AS query
+            FROM
+            ML.GENERATE_EMBEDDING(
+                MODEL `{self.project_id}.{embeddingsModelPath}`,
+                (
+                    SELECT '{query}' AS content
+                )
+            )
+        ),
+        top_k => 10,
+        options => '{{"fraction_lists_to_search":0.15}}'
+         )
+    """
+        query_job = self.client.query(formatted_query)
+        data = []
+
+        for row in query_job:
+            row_data = {field: row[field] for field in row.keys()}
+            data.append(row_data)
+        # Create a new list to hold the processed data
+        processed_data = []
+        log.info(f"Processing {len(data)} rows for user {userID}")
+        send_action_in_progress_to_caller(f"Agent Found {len(data)} items", userID)
+        # Loop through each item in the original data list
+        for item in data:
+            # Make a copy of the item to avoid modifying the original list in place
+            new_item = item.copy()
+
+            # Get the original URI
+            uri = new_item.get("uri", "")
+
+            # Check if the URI is a Google Cloud Storage URI and transform it
+            if uri.startswith("gs://"):
+                new_item["uri"] = uri.replace(
+                    "gs://",
+                    "https://dcsiq-app-dcsiq-genai-rag.apps.dev-03.us-central2.dev.sabre-gcp.com/content/",
+                )
+
+            # Add the updated item to our new list
+            processed_data.append(new_item)
+
+        uri_list = [item["uri"].replace(" ", "%20") for item in processed_data]
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_uri_list = []
+        for uri in uri_list:
+            if uri not in seen:
+                unique_uri_list.append(uri)
+                seen.add(uri)
+        result = await self.call_bq(query)
+        result_data = json.loads(result)
+        values = [list(row.values())[0] for row in result_data]
+        concatenated_result = "\n".join(values)
+        grounding_support_text = (
+            "<br><br><span style='color:blue;'><b>Grounding support:</b><br>"
+            + "<br>".join(
+                [
+                    f"<a href='{uri}' target='_blank'>{uri.split('/')[-1].replace('%20', ' ')}</a>"
