@@ -1,0 +1,48 @@
+import logging
+
+import fastapi
+from config import Config
+from fastapi import Header
+from fastapi.responses import HTMLResponse
+from model.document_search_response import document_search_response
+from pydantic import BaseModel
+from subsystem.Document_Enhancement import DocumentEnhancement
+
+logger = logging.getLogger(__name__)
+root_logger = logging.getLogger("root")
+root_logger.setLevel(logging.DEBUG)
+
+global project_id
+project_id = ""
+
+
+class Item(BaseModel):
+    query: str
+
+
+def init_project(cnf: Config):
+    global project_id
+    project_id = cnf.agent.project
+
+
+def get_router() -> fastapi.APIRouter:
+    """
+    Create a router for /document path.
+
+    Returns:
+        fastapi.APIRouter : Router for /document
+    """
+    router = fastapi.APIRouter()
+    logger.info(f"Project ID -  doc search: {project_id}")
+    test_doc_search = DocumentEnhancement(project_id, config=Config())
+
+    @router.post("/document_search", response_model=document_search_response)
+    async def document_search(
+        item: Item, userID: str = Header(None, alias="user-id")
+    ) -> document_search_response:
+        result = await test_doc_search.invoke_chain(item.query, userID=userID)
+        if isinstance(result, HTMLResponse):
+            return result
+        return document_search_response(answer=str(result))
+
+    return router
