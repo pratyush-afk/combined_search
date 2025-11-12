@@ -1,0 +1,206 @@
+import fastapi
+import os
+import textwrap
+import asyncio  # <-- Added for concurrent calls
+from pydantic import BaseModel
+from typing import Optional, Any
+from google import genai
+from google.genai import types
+from google.cloud import aiplatform
+from utilities.custom_logging import log as logger
+from fastapi.responses import HTMLResponse # <-- Added to handle doc search response
+
+# --- MODIFICATION: Imports from your other files ---
+# (Make sure these paths are correct for your project structure)
+try:
+    from config import Config
+    from subsystem.Document_Enhancement import DocumentEnhancement
+    from knowledge_search_service import KnowledgeSearchService # Assuming your File 2 is named this
+except ImportError as e:
+    logger.critical(f"Failed to import services: {e}. Ensure all files are in the correct path.")
+    # You might want to handle this more gracefully
+    raise
+
+
+# --- Pydantic Models ---
+
+class HybridSearchQuery(BaseModel):
+    """Model for hybrid search query input."""
+    query: str
+    domain: Optional[str] = None
+
+
+class HybridSearchResponse(BaseModel):
+    """Model for hybrid search response."""
+    combined_result: str
+    qachain_response: str
+    document_search_response: str
+
+
+# --- Helper Function for LLM (Unchanged) ---
+
+async def combine_responses_with_llm(
+    query: str, 
+    qachain_response: str, 
+    doc_search_response: str,
+    client: genai.Client,
+    model_name: str
+) -> str:
+    """
+    Use LLM to combine and synthesize responses from both sources.
+    """
+    prompt = textwrap.dedent(f"""
+You are a technical support AI assistant specialized in synthesizing information from multiple sources.
+
+User Query: {query}
+
+Source 1 - Conversational AI Agent:
+{qachain_response}
+
+Source 2 - Knowledge Base Documents:
+{doc_search_response}
+
+Instructions:
+1. Provide a concise, actionable answer (3-5 sentences maximum)
+2. Merge complementary information from both sources
+3. If sources conflict, prefer the most recent or authoritative information
+4. Use bullet points only for step-by-step procedures
+5. Avoid redundant explanations
+6. Focus on practical solutions
+7. If one source is significantly better, use that as primary and supplement with the other
+
+Format your response as:
+- Direct answer to the query
+- Key action items (if applicable)
+- Brief explanation (if needed)
+
+Provide ONLY the synthesized response without meta-commentary:
+""")
+    
+    try:
+        response = await client.aio.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            generation_config=types.GenerateContentConfig(
+                temperature=0.2,
+                top_p=0.9,
+                max_output_tokens=1024,
+            )
+        )
+        
+        combined_response = response.text.strip()
+        logger.info(f"Combined LLM Response: {combined_response}")
+        return combined_response
+        
+    except Exception as e:
+        logger.error(f"Error combining responses with LLM: {str(e)}")
+        return f"**Quick Answer:** {qachain_response[:200]}...\n\n**Additional Context:** {doc_search_response[:200]}..."
+
+
+# --- Router Definition ---
+
+def get_router() -> fastapi.APIsRouter:
+    """
+    Create a router for hybrid search combining QA chain and document search.
+    """
+    router = fastapi.APIRouter()
+
+    # --- MODIFICATION: Initialize all services at startup ---
+    try:
+        # 1. Load Config and Project ID
+        cnf = Config()
+        project_id = cnf.agent.project
+        
+        # 2. Initialize LLM Combiner Client
+        location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        model_name = os.getenv("GOOGLE_GEMINI_MODEL", "gemini-1.5-flash")
+        
+        aiplatform.init(project=project_id, location=location)
+        llm_client = genai.Client(vertexai=True, project=project_id, location=location)
+        logger.info(f"GenAI Client initialized for project: {project_id}, model: {model_name}")
+
+        # 3. Initialize your search services
+        knowledge_search_service = KnowledgeSearchService(project_id)
+        doc_search_service = DocumentEnhancement(project_id, config=cnf)
+        logger.info("KnowledgeSearchService and DocumentEnhancement services initialized.")
+        
+    except Exception as e:
+        logger.critical(f"Failed to initialize services at startup: {e}")
+        llm_client = None
+        knowledge_search_service = None
+        doc_search_service = None
+
+
+    @router.post("/hybrid_search", response_model=HybridSearchResponse)
+    async def hybrid_search(
+        request_body: HybridSearchQuery, 
+        request: fastapi.Request,
+        userID: str = fastapi.Header(...)
+    ):
+        """
+        Combine responses from qachain and document_search using LLM.
+        """
+        logger.info(f"Hybrid search query: {request_body.query} for user: {userID}")
+        
+        # Check if services failed to initialize
+        if not all([llm_client, knowledge_search_service, doc_search_service]):
+            raise fastapi.HTTPException(status_code=503, detail="AI Services are unavailable or failed to initialize.")
+
+        try:
+            # --- MODIFICATION: Run both searches in parallel ---
+            logger.info("Starting concurrent search...")
+            qa_task = knowledge_search_service.qa_chain_response(request_body.query)
+            doc_task = doc_search_service.invoke_chain(request_body.query, userID=userID)
+            
+            # Wait for both tasks to complete
+            results = await asyncio.gather(
+                qa_task,
+                doc_task,
+                return_exceptions=True  # Don't let one failure stop the other
+            )
+
+            # --- Process results (Handle errors and types) ---
+            
+            # Process QA Chain Result
+            if isinstance(results[0], Exception):
+                logger.error(f"QA chain failed: {results[0]}")
+                qachain_result = "Error: QA chain failed to produce a result."
+            else:
+                qachain_result = str(results[0])
+
+            # Process Document Search Result
+            if isinstance(results[1], Exception):
+                logger.error(f"Document search failed: {results[1]}")
+                doc_search_result = "Error: Document search failed to produce a result."
+            elif isinstance(results[1], HTMLResponse):
+                logger.warn("Document search returned HTML, using placeholder.")
+                doc_search_result = "Document search returned a non-textual HTML response."
+            else:
+                # Convert potential object (like document_search_response) to string
+                doc_search_result = str(getattr(results[1], 'answer', results[1]))
+            
+            # ---------------------------------------------------
+            
+            logger.info(f"QA Chain Response (Raw): {qachain_result[:100]}...")
+            logger.info(f"Document Search Response (Raw): {doc_search_result[:100]}...")
+            
+            # Combine responses using LLM
+            combined_result = await combine_responses_with_llm(
+                request_body.query,
+                qachain_result,
+                doc_search_result,
+                llm_client,
+                model_name
+            )
+            
+            return HybridSearchResponse(
+                combined_result=combined_result,
+                qachain_response=qachain_result,
+                document_search_response=doc_search_result
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in hybrid search: {str(e)}")
+            raise fastapi.HTTPException(status_code=500, detail=str(e))
+
+    return router
