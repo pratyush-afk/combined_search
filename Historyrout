@@ -1,0 +1,78 @@
+import fastapi
+from collections import deque, defaultdict
+from pydantic import BaseModel
+from typing import List, Dict
+from utilities.custom_logging import log as logger
+
+# Define the maximum size of the queue
+MAX_HISTORY_SIZE = 10
+
+# In-memory storage: Dictionary mapping UserID -> Deque (FIFO queue)
+# In a production environment, you would replace this with Redis or a Database.
+user_search_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=MAX_HISTORY_SIZE))
+
+class QuestionModel(BaseModel):
+    question: str
+
+class HistoryResponse(BaseModel):
+    user_id: str
+    recent_questions: List[str]
+
+def get_history_router() -> fastapi.APIRouter:
+    """
+    Creates a router to manage user question history (Last 10 items).
+    """
+    router = fastapi.APIRouter()
+
+    @router.post("/history/add", response_model=str)
+    async def add_question_to_history(
+        body: QuestionModel,
+        userID: str = fastapi.Header(...)
+    ):
+        """
+        Adds a question to the user's history queue. 
+        If queue > 10, the oldest question is automatically removed (FIFO).
+        """
+        try:
+            # append() on a deque with maxlen automatically handles the FIFO removal
+            user_search_history[userID].append(body.question)
+            logger.info(f"Added question to history for user {userID}. Queue size: {len(user_search_history[userID])}")
+            return "Question added to history."
+        except Exception as e:
+            logger.error(f"Error adding to history: {e}")
+            raise fastapi.HTTPException(status_code=500, detail="Failed to update history.")
+
+    @router.get("/history/get", response_model=HistoryResponse)
+    async def get_user_history(
+        userID: str = fastapi.Header(...)
+    ):
+        """
+        Retrieves the last 10 questions for the specific user.
+        """
+        try:
+            # Convert deque to list for the response
+            # reversed() is optional: currently returns [Oldest .... Newest]
+            # Use list(reversed(...)) if you want Newest first.
+            history_list = list(user_search_history[userID])
+            
+            return HistoryResponse(
+                user_id=userID,
+                recent_questions=history_list
+            )
+        except Exception as e:
+            logger.error(f"Error retrieving history: {e}")
+            raise fastapi.HTTPException(status_code=500, detail="Failed to fetch history.")
+
+    @router.delete("/history/clear")
+    async def clear_user_history(
+        userID: str = fastapi.Header(...)
+    ):
+        """
+        Clears the history for a specific user.
+        """
+        if userID in user_search_history:
+            user_search_history[userID].clear()
+            return {"message": f"History cleared for user {userID}"}
+        return {"message": "No history found for this user."}
+
+    return router
