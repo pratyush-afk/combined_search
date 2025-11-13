@@ -1,0 +1,207 @@
+import fastapi
+import os
+import asyncio
+import re  # <-- This is no longer used for stripping, but kept for future
+from pydantic import BaseModel
+from typing import Optional, Any
+from google.genai import types
+from utilities.custom_logging import log as logger
+from fastapi.responses import HTMLResponse  # <-- Used for the type check
+
+# --- Imports from your previous files ---
+try:
+    from config import Config
+    from subsystem.Document_Enhancement import DocumentEnhancement
+    from routers.knowledgeSearch import KnowledgeSearchService
+except ImportError as e:
+    logger.critical(f"Failed to import services: {e}. Ensure service files are accessible.")
+    raise
+
+
+class HybridSearchQuery(BaseModel):
+    """Model for hybrid search query input."""
+    query: str
+    domain: Optional[str] = None
+
+
+class HybridSearchResponse(BaseModel):
+    """Model for hybrid search response."""
+    combined_result: str
+    qachain_response: str
+    document_search_response: str
+
+
+def get_router() -> fastapi.APIRouter:
+    """
+    Create a router for hybrid search combining QA chain and document search.
+
+    Returns:
+        fastapi.APIRouter : Router for /hybrid_search
+    """
+    router = fastapi.APIRouter()
+
+    # --- Initialize the services ---
+    try:
+        cnf = Config()
+        project_id = cnf.agent.project
+        
+        knowledge_search_service = KnowledgeSearchService(project_id)
+        doc_search_service = DocumentEnhancement(project_id, config=cnf)
+        
+        logger.info("Initialized KnowledgeSearchService and DocumentEnhancement.")
+    except Exception as e:
+        logger.critical(f"Failed to initialize services at startup: {e}")
+        knowledge_search_service = None
+        doc_search_service = None
+
+
+    @router.post("/hybrid_search", response_model=HybridSearchResponse)
+    async def hybrid_search(
+        request_body: HybridSearchQuery, 
+        request: fastapi.Request,
+        userID: str = fastapi.Header(...)  # Required header
+    ):
+        """
+        Combine responses from qachain and document_search using LLM.
+        """
+        logger.info(f"Hybrid search query: {request_body.query} for user: {userID}")
+
+        if not knowledge_search_service or not doc_search_service:
+            logger.error("Search services are not initialized.")
+            raise fastapi.HTTPException(status_code=503, detail="Search services are unavailable.")
+            
+        try:
+            logger.info("Running QA chain and Document Search in parallel...")
+            qa_task = knowledge_search_service.qa_chain_response(request_body.query)
+            # This will return the HTMLResponse object from DocumentEnhancement
+            doc_task = doc_search_service.invoke_chain(request_body.query, userID=userID) 
+            
+            results = await asyncio.gather(
+                qa_task,
+                doc_task,
+                return_exceptions=True
+            )
+
+            # --- Process QA Chain Result ---
+            if isinstance(results[0], Exception):
+                logger.error(f"QA chain task failed: {results[0]}")
+                qachain_result = "Error: QA chain failed to produce a result."
+            else:
+                qachain_result = str(results[0])
+
+            # --- Process Document Search Result ---
+            if isinstance(results[1], Exception):
+                logger.error(f"Document search task failed: {results[1]}")
+                doc_search_result = "Error: Document search failed to produce a result."
+            
+            # --- MODIFICATION: Preserve HTML content ---
+            elif isinstance(results[1], HTMLResponse):
+                logger.info("Document search returned HTML. Preserving formatted content.")
+                try:
+                    # Get the HTML content from the response body and use it directly
+                    html_body = results[1].body.decode("utf-8")
+                    doc_search_result = html_body # <-- No longer stripping HTML
+                    
+                except Exception as e:
+                    logger.error(f"Failed to decode HTMLResponse body: {e}")
+                    doc_search_result = "Document search returned unparseable HTML."
+            # --- End of MODIFICATION ---
+            
+            else:
+                # Fallback in case it ever returns a non-HTML object
+                doc_search_result = str(getattr(results[1], 'answer', results[1]))
+            
+            logger.info(f"QA Chain Response: {qachain_result}")
+            # This log will now show the raw HTML
+            logger.info(f"Document Search Response (Raw HTML): {doc_search_result[:150]}...")
+            
+            combined_result = await combine_responses_with_llm(
+                request_body.query,
+                qachain_result, 
+                doc_search_result # Pass the full HTML string to the LLM
+            )
+            
+            return HybridSearchResponse(
+                combined_result=combined_result,
+                qachain_response=qachain_result,
+                document_search_response=doc_search_result # Return the full HTML string
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in hybrid search: {str(e)}")
+            raise fastapi.HTTPException(status_code=500, detail=str(e))
+
+    # --- NO CHANGE ---
+    # This is your exact function from the file you provided
+    async def combine_responses_with_llm(query: str, qachain_response: str, doc_search_response: str) -> str:
+        """
+        Use LLM to combine and synthesize responses from both sources.
+        
+        Args:
+            query: Original user query
+            qachain_response: Response from QA chain
+            doc_search_response: Response from document search (now contains HTML)
+            
+        Returns:
+            Combined and refined response
+        """
+        prompt = f"""
+You are a technical support AI assistant specialized in synthesizing information from multiple sources.
+
+User Query: {query}
+
+Source 1 - Conversational AI Agent:
+{qachain_response}
+
+Source 2 - Knowledge Base Documents:
+{doc_search_response}
+
+Instructions:
+1. Provide a concise, actionable answer (3-5 sentences maximum)
+2. Merge complementary information from both sources
+3. If sources conflict, prefer the most recent or authoritative information
+4. Use bullet points only for step-by-step procedures
+5. Avoid redundant explanations
+6. Focus on practical solutions
+7. If one source is significantly better, use that as primary and supplement with the other
+8. **IMPORTANT**: If Source 2 contains HTML links (e.g., `<a href=...`), preserve them in your final answer.
+
+Format your response as:
+- Direct answer to the query
+- Key action items (if applicable)
+- Brief explanation (if needed)
+
+Provide ONLY the synthesized response without meta-commentary:
+"""
+        
+        try:
+            from google.genai import Client
+            from google.cloud import aiplatform
+            import os
+            
+            project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "sab-dev-gen-ai-tech-6095")
+            location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+            model_name = os.getenv("GOOGLE_GEMINI_MODEL", "gemini-2.0-flash-exp")
+            
+            aiplatform.init(project=project_id, location=location)
+            client = Client(vertexai=True, project=project_id, location=location)
+            
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    top_p=0.9,
+                    max_output_tokens=8000,
+                )
+            )
+            
+            combined_response = response.text.strip()
+            logger.info(f"Combined LLM Response: {combined_response}")
+            return combined_response
+            
+        except Exception as e:
+            logger.error(f"Error combining responses with LLM: {str(e)}")
+            return f"**Quick Answer:** {qachain_response[:200]}...\n\n**Additional Context:** {doc_search_response[:200]}..."
+
+    return router
