@@ -1,0 +1,360 @@
+import React, { useState, useRef, useEffect, SetStateAction } from "react";
+import ConditionallyRender from "react-conditionally-render";
+
+import UserChatMessage from "../UserChatMessage/UserChatMessage";
+import ChatbotMessage from "../ChatbotMessage/ChatbotMessage";
+
+import { botMessage, userMessage, customMessage, createChatMessage } from "./chatUtils";
+import "./Chat.css";
+
+import { ICustomComponents, ICustomMessage, ICustomStyles } from "../../interfaces/IConfig";
+import { IMessage } from "../../interfaces/IMessages";
+
+interface IChatProps {
+  setState: React.Dispatch<SetStateAction<any>>;
+  widgetRegistry: any;
+  messageParser: any;
+  actionProvider: any;
+  customComponents: ICustomComponents;
+  botName: string;
+  customStyles: ICustomStyles;
+  headerText: string;
+  customMessages: ICustomMessage;
+  placeholderText: string;
+  validator: (input: string) => Boolean;
+  state: any;
+  disableScrollToBottom: boolean;
+  messageHistory: IMessage[] | string;
+  parse?: (message: string) => void;
+  actions?: object;
+  messageContainerRef: React.MutableRefObject<HTMLDivElement>;
+}
+
+const Chat = ({
+  state,
+  setState,
+  widgetRegistry,
+  messageParser,
+  parse,
+  customComponents,
+  actionProvider,
+  botName,
+  customStyles,
+  headerText,
+  customMessages,
+  placeholderText,
+  validator,
+  disableScrollToBottom,
+  messageHistory,
+  actions,
+  messageContainerRef,
+}: IChatProps) => {
+  const { messages } = state;
+
+  const [input, setInputValue] = useState("");
+  const [questionHistory, setQuestionHistory] = useState<string[]>([]);
+  // -1 means we are currently typing a new message (not browsing history)
+  const [historyIndex, setHistoryIndex] = useState(-1);
+
+  const scrollIntoView = () => {
+    setTimeout(() => {
+      if (messageContainerRef.current) {
+        messageContainerRef.current.scrollTop = messageContainerRef?.current?.scrollHeight;
+      }
+    }, 50);
+  };
+
+  // Fetch question history from API
+  useEffect(() => {
+    const fetchQuestionHistory = async () => {
+      try {
+        const userId = sessionStorage.getItem("userID");
+        const idToken = sessionStorage.getItem("idToken");
+        
+        if (!userId) {
+          console.warn("User ID not found in session storage");
+          return;
+        }
+        
+        const response = await fetch(`http://localhost:8081/history/get`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${idToken || ''}`,
+            'userID': userId,
+          }
+        });
+        
+        const data = await response.json();
+        
+        if (data && Array.isArray(data.recent_questions)) {
+          // CRITICAL FIX: Reverse the array so Index 0 is the Newest question
+          // Original: [Oldest, ..., Newest]
+          // New: [Newest, ..., Oldest]
+          const sortedHistory = [...data.recent_questions].reverse();
+          console.log("Setting reversed history:", sortedHistory);
+          setQuestionHistory(sortedHistory);
+        }
+      } catch (error) {
+        console.error("Error fetching question history:", error);
+      }
+    };
+    fetchQuestionHistory();
+  }, [messages]); // Re-fetch when messages change (so the message you just sent appears in history)
+
+  useEffect(() => {
+    if (disableScrollToBottom) return;
+    scrollIntoView();
+  });
+
+  const showAvatar = (messages: any[], index: number) => {
+    if (index === 0) return true;
+
+    const lastMessage = messages[index - 1];
+
+    if (lastMessage.type === "bot" && !lastMessage.widget) {
+      return false;
+    }
+    return true;
+  };
+
+  const renderMessages = () => {
+    return messages.map((messageObject: IMessage, index: number) => {
+      if (botMessage(messageObject)) {
+        return (
+          <React.Fragment key={messageObject.id}>
+            {renderChatbotMessage(messageObject, index)}
+          </React.Fragment>
+        );
+      }
+
+      if (userMessage(messageObject)) {
+        return (
+          <React.Fragment key={messageObject.id}>{renderUserMessage(messageObject)}</React.Fragment>
+        );
+      }
+
+      if (customMessage(messageObject, customMessages)) {
+        return (
+          <React.Fragment key={messageObject.id}>
+            {renderCustomMessage(messageObject)}
+          </React.Fragment>
+        );
+      }
+    });
+  };
+
+  const renderCustomMessage = (messageObject: IMessage) => {
+    const customMessage = customMessages[messageObject.type];
+
+    const props = {
+      setState,
+      state,
+      scrollIntoView,
+      actionProvider,
+      payload: messageObject.payload,
+      actions,
+    };
+
+    if (messageObject.widget) {
+      const widget = widgetRegistry.getWidget(messageObject.widget, {
+        ...state,
+        scrollIntoView,
+        payload: messageObject.payload,
+        actions,
+      });
+      return (
+        <>
+          {customMessage(props)}
+          {widget ? widget : null}
+        </>
+      );
+    }
+
+    return customMessage(props);
+  };
+
+  const renderUserMessage = (messageObject: IMessage) => {
+    const widget = widgetRegistry.getWidget(messageObject.widget, {
+      ...state,
+      scrollIntoView,
+      payload: messageObject.payload,
+      actions,
+    });
+    return (
+      <>
+        <UserChatMessage
+          message={messageObject.message}
+          key={messageObject.id}
+          customComponents={customComponents}
+        />
+        {widget ? widget : null}
+      </>
+    );
+  };
+
+  const renderChatbotMessage = (messageObject: IMessage, index: number) => {
+    let withAvatar;
+    if (messageObject.withAvatar) {
+      withAvatar = messageObject.withAvatar;
+    } else {
+      withAvatar = showAvatar(messages, index);
+    }
+
+    const chatbotMessageProps = {
+      ...messageObject,
+      setState,
+      state,
+      customComponents,
+      widgetRegistry,
+      messages,
+      actions,
+    };
+
+    if (messageObject.widget) {
+      const widget = widgetRegistry.getWidget(chatbotMessageProps.widget, {
+        ...state,
+        scrollIntoView,
+        payload: messageObject.payload,
+        actions,
+      });
+      return (
+        <>
+          <ChatbotMessage
+            customStyles={{
+              backgroundColor: "",
+            }}
+            withAvatar={withAvatar}
+            {...chatbotMessageProps}
+            key={messageObject.id}
+          />
+          <ConditionallyRender
+            condition={!chatbotMessageProps.loading}
+            show={widget ? widget : null}
+          />
+        </>
+      );
+    }
+
+    return (
+      <ChatbotMessage
+        customStyles={{
+          backgroundColor: "",
+        }}
+        key={messageObject.id}
+        withAvatar={withAvatar}
+        {...chatbotMessageProps}
+        customComponents={customComponents}
+        messages={messages}
+        setState={setState}
+      />
+    );
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim()) return;
+
+    if (validator && typeof validator === "function") {
+      if (validator(input)) {
+        handleValidMessage();
+        if (parse) return parse(input);
+        messageParser.parse(input);
+      }
+    } else {
+      handleValidMessage();
+      if (parse) return parse(input);
+      messageParser.parse(input);
+    }
+  };
+
+  const handleValidMessage = () => {
+    setState((state: any) => ({
+      ...state,
+      messages: [...state.messages, createChatMessage(input, "user")],
+    }));
+
+    scrollIntoView();
+    setInputValue("");
+    setHistoryIndex(-1); // Reset history index to "new message" state
+  };
+
+  // =================================================================
+  // UPDATED KEY HANDLER LOGIC
+  // =================================================================
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // We only care about Up/Down if we have history
+    if (questionHistory.length === 0) return;
+
+    if (e.key === "ArrowUp") {
+      e.preventDefault(); // Stop cursor from jumping to start
+      
+      // Move deeper into history (0 -> 1 -> 2)
+      // Because we reversed the array, 0 is Newest, 9 is Oldest.
+      const newIndex = historyIndex + 1;
+
+      if (newIndex < questionHistory.length) {
+        setHistoryIndex(newIndex);
+        setInputValue(questionHistory[newIndex]);
+      }
+    } 
+    else if (e.key === "ArrowDown") {
+      e.preventDefault();
+
+      // Move back towards present
+      if (historyIndex > 0) {
+        const newIndex = historyIndex - 1;
+        setHistoryIndex(newIndex);
+        setInputValue(questionHistory[newIndex]);
+      } 
+      else if (historyIndex === 0) {
+        // We are at the most recent item, pressing down should clear it
+        setHistoryIndex(-1);
+        setInputValue(""); 
+      }
+    }
+  };
+
+  const customButtonStyle = { backgroundColor: "" };
+  if (customStyles && customStyles.chatButton) {
+    customButtonStyle.backgroundColor = customStyles.chatButton.backgroundColor;
+  }
+
+  let placeholder = "Type your message here";
+  if (placeholderText) placeholder = placeholderText;
+  
+  const spacing = -31;
+  const inputStyle = { bottom: `${spacing}px` };
+
+  return (
+    <div className="react-chatbot-kit-chat-container">
+      <div className="react-chatbot-kit-chat-inner-container">
+        <div className="react-chatbot-kit-chat-message-container" ref={messageContainerRef}>
+          <ConditionallyRender
+            condition={typeof messageHistory === "string" && Boolean(messageHistory)}
+            show={<div dangerouslySetInnerHTML={{ __html: messageHistory as string }} />}
+          />
+          {renderMessages()}
+          <div style={{ paddingBottom: "15px" }} />
+        </div>
+
+        <div className="react-chatbot-kit-chat-input-container" style={inputStyle}>
+          <form className="react-chatbot-kit-chat-input-form" onSubmit={handleSubmit}>
+            <input
+              className="react-chatbot-kit-chat-input"
+              placeholder={placeholder}
+              value={input}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleKeyDown} // Attach the updated handler
+            />
+            <button className="react-chatbot-kit-chat-btn-send" style={customButtonStyle}>
+              {/* <ChatIcon className="react-chatbot-kit-chat-btn-send-icon" /> */}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Chat;
