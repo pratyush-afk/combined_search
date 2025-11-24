@@ -1,0 +1,297 @@
+import React, { useState } from 'react';
+
+const FullScreenDashboardForm = () => {
+  // State for form data
+  const [teamName, setTeamName] = useState('');
+  const [projectCode, setProjectCode] = useState('');
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [status, setStatus] = useState(null);
+
+  // Handlers (kept simple for UI focus)
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    if (name === 'teamName') setTeamName(value);
+    if (name === 'projectCode') setProjectCode(value.toUpperCase().replace(/[^A-Z0-9-]/g, ''));
+  };
+
+  const handleFileChange = (e) => {
+    setUploadedFile(e.target.files[0]);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (isSubmitting || !teamName || !projectCode || !uploadedFile) {
+        setStatus({ type: 'error', message: 'Please ensure all fields are complete.' });
+        return;
+    }
+
+    setIsSubmitting(true);
+    setStatus(null);
+    console.log('Submitting:', { teamName, projectCode, fileName: uploadedFile.name });
+
+    // Simulate API call and success after 2 seconds
+    setTimeout(() => {
+        setIsSubmitting(false);
+        setStatus({ type: 'success', message: `Submission successful for Project ${projectCode}.` });
+        setTeamName('');
+        setProjectCode('');
+        setUploadedFile(null);
+    }, 2000);
+  };
+
+  // --- STYLES BASED ON THE DASHBOARD THEME ---
+  const colors = {
+    headerBg: '#2a3b4c',      // Dark/Navy for the top bar
+    headerText: '#ffffff',
+    mainBg: '#f0f0f0',        // Light gray for overall background
+    contentBg: '#ffffff',     // Pure white for the main content area
+    borderColor: '#e0e0e0',   // Light gray for segmentation lines
+    primaryButton: '#1890ff', // A standard blue for primary action
+    buttonText: '#ffffff',
+    textDark: '#333333',
+    textMuted: '#666666',
+  };
+
+  const styles = {
+    // Mimics the full viewport area
+    viewportContainer: {
+        height: '100vh', 
+        display: 'flex',
+        flexDirection: 'column',
+        fontFamily: 'Arial, sans-serif',
+        backgroundColor: colors.mainBg,
+    },
+    
+    // Header/Navbar Style
+    header: {
+        backgroundColor: colors.headerBg,
+        color: colors.headerText,
+        padding: '10px 20px',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+        height: '50px',
+        fontSize: '1.1rem',
+        fontWeight: 'bold',
+    },
+
+    // Main content area - takes up remaining space
+    mainContent: {
+        flexGrow: 1,
+        backgroundColor: colors.contentBg,
+        display: 'flex',
+        borderTop: `1px solid ${colors.borderColor}`,
+        overflow: 'auto', // Allows scrolling if content is too long
+    },
+
+    // Left sidebar / Form section
+    formContainer: {
+        flex: 3, // Takes 3 units of space
+        padding: '40px 60px',
+        borderRight: `1px solid ${colors.borderColor}`,
+    },
+
+    // Right sidebar / Info section
+    infoPanel: {
+        flex: 1.5, // Takes 1.5 units of space, making it narrower than the form
+        padding: '40px 20px',
+        backgroundColor: colors.mainBg, // Slight difference for visual segmentation
+        color: colors.textMuted,
+        fontSize: '0.9rem',
+    },
+
+    // Input Styles
+    inputGroup: {
+        marginBottom: '30px',
+    },
+    label: {
+        display: 'block',
+        marginBottom: '8px',
+        fontWeight: '600',
+        color: colors.textDark,
+        fontSize: '0.95rem',
+    },
+    input: {
+        width: '100%',
+        padding: '12px',
+        border: `1px solid ${colors.borderColor}`,
+        borderRadius: '4px',
+        fontSize: '1rem',
+        boxSizing: 'border-box',
+        color: colors.textDark,
+        transition: 'border-color 0.2s',
+    },
+    fileInputContainer: {
+        border: `2px dashed ${colors.borderColor}`,
+        backgroundColor: '#fafafa',
+        borderRadius: '4px',
+        padding: '20px',
+        textAlign: 'center',
+        cursor: 'pointer',
+        transition: 'border-color 0.2s, background-color 0.2s',
+    },
+    fileInput: {
+        display: 'none',
+    },
+    
+    // Bottom Action Bar (Footer style)
+    actionBar: {
+        backgroundColor: colors.contentBg,
+        padding: '15px 60px',
+        borderTop: `1px solid ${colors.borderColor}`,
+        display: 'flex',
+        justifyContent: 'flex-start', // Puts button on the left
+        height: '70px',
+    },
+    submitButton: {
+        padding: '10px 30px',
+        backgroundColor: colors.primaryButton,
+        color: colors.buttonText,
+        border: 'none',
+        borderRadius: '4px',
+        cursor: 'pointer',
+        fontSize: '1rem',
+        fontWeight: 'bold',
+        transition: 'background-color 0.3s',
+    },
+    statusMessage: {
+        marginLeft: '20px',
+        display: 'flex',
+        alignItems: 'center',
+        fontWeight: '600',
+    },
+  };
+
+  // Dynamic/Interactive Styles
+  const buttonHoverStyle = {
+    ...styles.submitButton,
+    backgroundColor: '#40a9ff', // Lighter blue on hover
+  };
+
+  const statusSuccessStyle = {
+      color: 'green',
+  };
+
+  const statusErrorStyle = {
+      color: 'red',
+  };
+
+  return (
+    <div style={styles.viewportContainer}>
+      
+      {/* 1. TOP HEADER (Dark Theme) */}
+      <div style={styles.header}>
+        <span>Project Submission Portal</span>
+        {/* Placeholder for navigation/user icon, mimicking the image */}
+        <div>👤 Settings | Help</div>
+      </div>
+      
+      {/* 2. MAIN CONTENT AREA (Full-Screen Layout) */}
+      <div style={styles.mainContent}>
+        
+        {/* LEFT SECTION: THE FORM */}
+        <div style={styles.formContainer}>
+            <h1>Project Details</h1>
+            <p style={{ color: colors.textMuted, marginBottom: '40px' }}>
+                Enter the required information and upload your final project bundle.
+            </p>
+
+            <form onSubmit={handleSubmit}>
+                
+                {/* Team Name Input */}
+                <div style={styles.inputGroup}>
+                    <label htmlFor="teamName" style={styles.label}>Team Name</label>
+                    <input
+                        type="text"
+                        id="teamName"
+                        name="teamName"
+                        value={teamName}
+                        onChange={handleInputChange}
+                        placeholder="e.g., Alpha Squad"
+                        style={styles.input}
+                        required
+                    />
+                </div>
+
+                {/* Project Code Input */}
+                <div style={styles.inputGroup}>
+                    <label htmlFor="projectCode" style={styles.label}>Project Code</label>
+                    <input
+                        type="text"
+                        id="projectCode"
+                        name="projectCode"
+                        value={projectCode}
+                        onChange={handleInputChange}
+                        placeholder="e.g., PJT-001"
+                        style={styles.input}
+                        maxLength="15"
+                        required
+                    />
+                </div>
+
+                {/* File Upload Field */}
+                <div style={styles.inputGroup}>
+                    <label htmlFor="projectFile" style={styles.label}>Project File Upload (.zip, .tar, .pdf)</label>
+                    <div 
+                        style={styles.fileInputContainer}
+                        onMouseOver={(e) => e.currentTarget.style.borderColor = colors.primaryButton}
+                        onMouseOut={(e) => e.currentTarget.style.borderColor = colors.borderColor}
+                    >
+                        <input
+                            type="file"
+                            id="projectFile"
+                            name="projectFile"
+                            onChange={handleFileChange}
+                            style={styles.fileInput}
+                            required
+                        />
+                        <label htmlFor="projectFile" style={{ cursor: 'pointer', color: uploadedFile ? colors.textDark : colors.textMuted }}>
+                            {uploadedFile 
+                                ? `📂 File Selected: ${uploadedFile.name}` 
+                                : 'Click here to select file or drop file here'
+                            }
+                        </label>
+                    </div>
+                </div>
+            </form>
+        </div>
+        
+        {/* RIGHT SECTION: INFO PANEL */}
+        <div style={styles.infoPanel}>
+            <h2>Submission Guidelines</h2>
+            <ul style={{ paddingLeft: '20px', listStyleType: 'disc' }}>
+                <li style={{ marginBottom: '10px' }}>Project Code must be unique and alphanumeric.</li>
+                <li style={{ marginBottom: '10px' }}>Maximum file size is 50MB.</li>
+                <li style={{ marginBottom: '10px' }}>Only ZIP and PDF formats are accepted.</li>
+                <li style={{ marginBottom: '10px' }}>Check status with your Project ID after submission.</li>
+            </ul>
+        </div>
+      </div>
+
+      {/* 3. BOTTOM ACTION BAR (Dark action button) */}
+      <div style={styles.actionBar}>
+        <button
+            type="submit"
+            onClick={handleSubmit}
+            disabled={isSubmitting}
+            style={isSubmitting ? { ...styles.submitButton, opacity: 0.7, cursor: 'not-allowed' } : styles.submitButton}
+            onMouseOver={(e) => !isSubmitting && Object.assign(e.currentTarget.style, buttonHoverStyle)}
+            onMouseOut={(e) => !isSubmitting && Object.assign(e.currentTarget.style, styles.submitButton)}
+        >
+            {isSubmitting ? 'Submitting...' : 'SUBMIT PROJECT'}
+        </button>
+
+        {/* Submission Status Message */}
+        {status && (
+            <div style={{ ...styles.statusMessage, ...(status.type === 'success' ? statusSuccessStyle : statusErrorStyle) }}>
+                {status.message}
+            </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default FullScreenDashboardForm;
