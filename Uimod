@@ -1,0 +1,270 @@
+import React, { useState } from 'react';
+
+const HyperFocusSubmissionUI = () => {
+  // State for form data and status
+  const [teamName, setTeamName] = useState('');
+  const [projectCode, setProjectCode] = useState('');
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [status, setStatus] = useState(null); // { type: 'success' | 'error', message: string }
+
+  // Handlers
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    if (name === 'teamName') {
+      setTeamName(value);
+    } else if (name === 'projectCode') {
+      // Enforce clean, uppercase code format
+      setProjectCode(value.toUpperCase().replace(/[^A-Z0-9-]/g, ''));
+    }
+  };
+
+  const handleFileChange = (e) => {
+    setUploadedFile(e.target.files[0]);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    setStatus(null);
+    if (isSubmitting) return;
+
+    if (!teamName || !projectCode || !uploadedFile) {
+      setStatus({ type: 'error', message: 'All fields are required to initiate submission.' });
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    // --- Simulated API Call ---
+    console.log('Submitting Project:', { teamName, projectCode, fileName: uploadedFile.name });
+
+    setTimeout(() => {
+      setIsSubmitting(false);
+      // Success simulation
+      setStatus({ type: 'success', message: `Project ${projectCode} submitted successfully by ${teamName}!` });
+      // Clear form
+      setTeamName('');
+      setProjectCode('');
+      setUploadedFile(null);
+    }, 2000);
+    // --------------------------
+  };
+
+  // --- STYLES FOR PREMIUM DARK UI (CSS-in-JS) ---
+  const colors = {
+    background: '#1a1a2e',      // Deep space blue
+    card: '#2c394b',            // Slightly lighter blue/gray for card
+    primaryAccent: '#00cc99',   // Vibrant teal/green
+    textLight: '#e0e0e0',       // Light gray for main text
+    textMuted: '#a0a0a0',       // Muted gray for labels/hints
+    success: '#38b000',         // Green
+    error: '#e71d36',           // Red
+  };
+
+  const styles = {
+    pageContainer: {
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'center',
+      minHeight: '100vh',
+      backgroundColor: colors.background,
+      fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+      color: colors.textLight,
+      padding: '40px',
+    },
+    formCard: {
+      width: '100%',
+      maxWidth: '600px',
+      padding: '50px 40px',
+      borderRadius: '20px',
+      background: colors.card,
+      boxShadow: '0 10px 40px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.05)',
+      transition: 'all 0.4s ease',
+    },
+    title: {
+      fontSize: '2.5rem',
+      fontWeight: '700',
+      marginBottom: '10px',
+      color: colors.primaryAccent,
+      letterSpacing: '0.05em',
+      borderBottom: `2px solid ${colors.primaryAccent}40`,
+      paddingBottom: '15px',
+    },
+    subtitle: {
+        fontSize: '1rem',
+        marginBottom: '40px',
+        color: colors.textMuted,
+    },
+    inputGroup: {
+      marginBottom: '30px',
+    },
+    label: {
+      display: 'block',
+      marginBottom: '10px',
+      fontWeight: '600',
+      color: colors.textMuted,
+      fontSize: '0.9rem',
+      textTransform: 'uppercase',
+      letterSpacing: '0.1em',
+    },
+    input: {
+      width: '100%',
+      padding: '15px',
+      border: 'none',
+      background: `${colors.card}aa`,
+      borderRadius: '10px',
+      fontSize: '1.1rem',
+      color: colors.textLight,
+      boxSizing: 'border-box',
+      boxShadow: 'inset 2px 2px 5px #151520, inset -2px -2px 5px #434360',
+      transition: 'box-shadow 0.3s',
+    },
+    fileDropZone: {
+      border: `2px dashed ${colors.primaryAccent}66`,
+      backgroundColor: `${colors.card}55`,
+      borderRadius: '10px',
+      padding: '30px',
+      textAlign: 'center',
+      cursor: 'pointer',
+      transition: 'background-color 0.3s, border-color 0.3s',
+      marginBottom: '30px',
+    },
+    fileInput: {
+      display: 'none',
+    },
+    submitButton: {
+      width: '100%',
+      padding: '15px 25px',
+      backgroundColor: colors.primaryAccent,
+      color: colors.background,
+      border: 'none',
+      borderRadius: '10px',
+      cursor: 'pointer',
+      fontSize: '1.1rem',
+      fontWeight: '700',
+      transition: 'background-color 0.3s, transform 0.1s, box-shadow 0.3s',
+      boxShadow: `0 5px 15px ${colors.primaryAccent}80`,
+    },
+    statusMessage: {
+      padding: '15px',
+      borderRadius: '10px',
+      marginTop: '25px',
+      textAlign: 'center',
+      fontWeight: '600',
+      letterSpacing: '0.05em',
+    },
+  };
+
+  // Dynamic/Interactive Styles
+  const buttonHoverStyle = {
+    ...styles.submitButton,
+    backgroundColor: '#00e6a3', // Lighter on hover
+    boxShadow: `0 8px 20px ${colors.primaryAccent}99`,
+  };
+
+  const statusSuccessStyle = {
+    ...styles.statusMessage,
+    backgroundColor: `${colors.success}30`,
+    border: `1px solid ${colors.success}`,
+    color: colors.success,
+  };
+
+  const statusErrorStyle = {
+    ...styles.statusMessage,
+    backgroundColor: `${colors.error}30`,
+    border: `1px solid ${colors.error}`,
+    color: colors.error,
+  };
+  
+  // Render logic for the file message
+  const fileMessage = uploadedFile 
+    ? `✅ ${uploadedFile.name} (${(uploadedFile.size / 1024 / 1024).toFixed(2)} MB)` 
+    : 'Drag and drop your ZIP/TAR file here, or click to browse.';
+
+
+  return (
+    <div style={styles.pageContainer}>
+      <div style={styles.formCard}>
+        <div style={styles.title}>PROJECT SUBMISSION</div>
+        <div style={styles.subtitle}>Securely upload your final project files and details.</div>
+        
+        <form onSubmit={handleSubmit}>
+          
+          {/* Team Name Input */}
+          <div style={styles.inputGroup}>
+            <label htmlFor="teamName" style={styles.label}>Team Name</label>
+            <input
+              type="text"
+              id="teamName"
+              name="teamName"
+              value={teamName}
+              onChange={handleInputChange}
+              placeholder="e.g., Quantum Leap"
+              style={styles.input}
+              required
+            />
+          </div>
+
+          {/* Project Code Input */}
+          <div style={styles.inputGroup}>
+            <label htmlFor="projectCode" style={styles.label}>Project Code</label>
+            <input
+              type="text"
+              id="projectCode"
+              name="projectCode"
+              value={projectCode}
+              onChange={handleInputChange}
+              placeholder="e.g., PJT-ALPHA-77"
+              style={styles.input}
+              maxLength="20"
+              required
+            />
+          </div>
+
+          {/* File Upload Field */}
+          <div style={styles.inputGroup}>
+            <label htmlFor="projectFile" style={styles.label}>Project File Upload</label>
+            <div 
+                style={styles.fileDropZone}
+                onMouseOver={(e) => e.currentTarget.style.borderColor = colors.primaryAccent}
+                onMouseOut={(e) => e.currentTarget.style.borderColor = `${colors.primaryAccent}66`}
+            >
+                <input
+                    type="file"
+                    id="projectFile"
+                    name="projectFile"
+                    onChange={handleFileChange}
+                    style={styles.fileInput}
+                    required
+                />
+                <label htmlFor="projectFile" style={{ cursor: 'pointer', color: uploadedFile ? colors.primaryAccent : colors.textMuted }}>
+                    {fileMessage}
+                </label>
+            </div>
+          </div>
+
+          {/* Submission Button */}
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            style={isSubmitting ? { ...styles.submitButton, opacity: 0.6, cursor: 'not-allowed' } : styles.submitButton}
+            onMouseOver={(e) => !isSubmitting && Object.assign(e.currentTarget.style, buttonHoverStyle)}
+            onMouseOut={(e) => !isSubmitting && Object.assign(e.currentTarget.style, styles.submitButton)}
+          >
+            {isSubmitting ? 'Processing...' : 'Submit Project Files'}
+          </button>
+        </form>
+
+        {/* Submission Status Message */}
+        {status && (
+            <div style={status.type === 'success' ? statusSuccessStyle : statusErrorStyle}>
+                {status.type === 'success' ? '🚀 ' : '🛑 '}
+                {status.message}
+            </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default HyperFocusSubmissionUI;
