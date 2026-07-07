@@ -421,3 +421,92 @@ Think you are a expert in java with more than 15 years of experience you know ev
 
 
 
+# Day 1 — What is Java? JVM, JRE, JDK
+
+## The one-sentence version
+
+Java code doesn't run directly on your computer — it runs on a *virtual* computer (the JVM) that Sun Microsystems (now Oracle) built once and put inside every OS, so your code runs anywhere without you rewriting it.
+
+That's the entire pitch of Java, coined as "**Write Once, Run Anywhere**" (WORA).
+
+## Why this even needed to exist
+
+Before Java, if you wrote a C program on Windows, it literally would not run on a Mac or Linux box — you had to recompile it (sometimes rewrite parts of it) for every operating system, because compiled C code talks directly to that machine's CPU instructions.
+
+Java's creators inserted a middleman between your code and the OS. That middleman is the **JVM**.
+
+## The three letters that confuse everyone: JVM, JRE, JDK
+
+Think of it like cooking a meal:
+
+| Term | What it is | Analogy |
+|---|---|---|
+| **JVM** (Java Virtual Machine) | The engine that actually *runs* compiled Java code | The stove — turns raw ingredients into a cooked meal |
+| **JRE** (Java Runtime Environment) | JVM + standard libraries (collections, I/O, etc.) needed to *run* a Java app | The stove + a stocked pantry — everything needed to cook and serve, nothing to prep raw ingredients |
+| **JDK** (Java Development Kit) | JRE + compiler (`javac`) + dev tools | The full kitchen — stove, pantry, *and* knives/cutting boards to actually prepare food from scratch |
+
+So the containment is: **JDK ⊃ JRE ⊃ JVM**
+
+- If you're just **running** someone else's Java app → you historically only needed the JRE.
+- If you're **writing/compiling** Java code → you need the JDK.
+
+**Important modern correction:** since Java 11, Oracle stopped shipping JRE as a separate public download. Today you basically always just install the **JDK**, and it includes everything. I'm teaching you the JRE distinction anyway because interviewers still ask it constantly, and it's the right mental model for *why* the pieces exist.
+
+## What actually happens when you run a Java program
+
+This is the part that makes everything else in Java click. Walk through this with me:
+
+```
+HelloWorld.java  →  [javac compiler]  →  HelloWorld.class  →  [JVM]  →  Output
+   (source code)                         (bytecode)
+```
+
+1. **You write** `HelloWorld.java` — human-readable source code.
+2. **`javac` compiles it** — not into machine code (CPU instructions), but into **bytecode**: a universal, intermediate format stored in a `.class` file. This bytecode means *nothing* to your CPU directly.
+3. **The JVM reads that bytecode** and translates it, line by line (or in optimized chunks via the JIT compiler — we'll cover that on Day 74), into the actual machine code your specific CPU/OS understands.
+
+This is *the* reason Java is portable: you compile **once** into bytecode, and any machine with a JVM installed — Windows, Mac, Linux, doesn't matter — can run that exact same `.class` file. The JVM is what's different per-OS; your bytecode never changes.
+
+## Real-world analogy
+
+Think of bytecode like a **PDF file**. A PDF isn't a Word document and it isn't a printed page — it's an intermediate format. You can open that *same* PDF file on Windows, Mac, a phone, anywhere, because each platform has a PDF reader (the "virtual machine" for PDFs) that knows how to render it correctly for that device. You don't need a different PDF for every OS. Same idea — `.class` bytecode is to the JVM what a PDF is to a PDF reader.
+
+## Quick mental model recap
+
+```
+        ┌─────────────────────────────────────┐
+        │              JDK                     │
+        │   ┌───────────────────────────────┐  │
+        │   │            JRE                │  │
+        │   │   ┌───────────────────────┐   │  │
+        │   │   │         JVM            │   │  │
+        │   │   │  (executes bytecode)   │   │  │
+        │   │   └───────────────────────┘   │  │
+        │   │   + Core Libraries (java.*)   │  │
+        │   └───────────────────────────────┘  │
+        │   + javac, javadoc, jar, debugger     │
+        └─────────────────────────────────────┘
+```
+
+## Interview-ready Q&A
+
+**Q1: Is Java compiled or interpreted?**
+Trick question — it's **both**. `javac` compiles source → bytecode (compilation step). Then the JVM interprets that bytecode at runtime, and also uses a **JIT (Just-In-Time) compiler** to convert hot/frequently-run bytecode into native machine code for speed. So Java is a hybrid model.
+
+**Q2: Why is Java called "platform independent" when the JVM itself is platform-dependent?**
+Because *your code and your `.class` files* are platform-independent — the same bytecode runs everywhere. The JVM itself is **not** platform-independent; you need a different JVM build for Windows vs Linux vs Mac. The JVM is the thing that absorbs the platform differences so your code doesn't have to.
+
+**Q3: Can you run a `.java` file directly without compiling?**
+Since Java 11, yes — for single-file programs you can run `java HelloWorld.java` directly, and Java compiles it in-memory behind the scenes before running it. But it's still compiling first; it just hides that step from you for quick scripts. Production code is still explicitly compiled.
+
+**Q4: What's the difference between JIT and the standard compiler (javac)?**
+`javac` converts source code → bytecode, once, ahead of time. The JIT compiler lives *inside the JVM* and converts bytecode → native machine code *at runtime*, specifically for code paths that run often, to make execution faster than pure interpretation.
+
+**Q5: If I only have a JRE and no JDK, can I compile Java code?**
+No — JRE has no `javac`. You can only *run* already-compiled `.class`/`.jar` files. You need the JDK to compile from source. (Moot point today since standalone JRE installers are discontinued, but know the *reasoning*.)
+
+---
+
+That's Day 1 — the foundation everything else sits on. Once you understand "source → bytecode → JVM," concepts like JIT, classloaders, and even garbage collection later will make a lot more sense, since they're all things the JVM is doing.
+
+Go check off Day 1 in your tracker. Ready for **Day 2: Setting up & writing your first program**, or do you want to sit with this a bit longer first?
